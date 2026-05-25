@@ -1,0 +1,13 @@
+[package]
+name = "photo-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ab_glyph.workspace = true
+image.workspace = true
+imageproc.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+walkdir.workspace = true
