@@ -11,6 +11,9 @@ pub enum PhotoError {
     #[error("XMP segment is too large for a JPEG APP1 marker")]
     XmpTooLarge,
 
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+
     #[error("image error: {0}")]
     Image(#[from] image::ImageError),
 

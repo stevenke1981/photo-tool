@@ -11,10 +11,11 @@ use egui::{
 };
 use image::DynamicImage;
 use photo_core::{
-    BatchOptions, BatchSummary, ComposeDocument, ComposeLayer, ConvertOptions, ImageInfo,
-    ImageLayer, PanoramaMode, PanoramaOptions, SupportedFormat, TextLayer, collect_supported_files,
-    inspect_image, load_dynamic_image, process_batch_with_progress, render_composition,
-    save_dynamic_image, text_layer_bounds, write_panorama_dynamic_jpeg,
+    BatchOptions, BatchSummary, ComposeDocument, ComposeLayer, ConvertOptions, GifOptions,
+    ImageInfo, ImageLayer, PanoramaMode, PanoramaOptions, SupportedFormat, TextLayer,
+    collect_supported_files, inspect_image, load_dynamic_image, process_batch_with_progress,
+    render_composition, save_dynamic_image, text_layer_bounds, write_animated_gif,
+    write_panorama_dynamic_jpeg,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,9 +99,15 @@ enum TextKey {
     RotateLeft,
     RotateRight,
     RunBatch,
+    RunGif,
     SaveAsNewFile,
     SaveConverted,
     Grayscale,
+    GifFrameDelay,
+    GifMaker,
+    GifRepeat,
+    GifResize,
+    GifSource,
     Invert,
     Brightness,
     Contrast,
@@ -199,9 +206,15 @@ impl TextKey {
             Self::RotateLeft => "向左旋轉",
             Self::RotateRight => "向右旋轉",
             Self::RunBatch => "開始批次轉檔",
+            Self::RunGif => "製作 GIF",
             Self::SaveAsNewFile => "另存新檔",
             Self::SaveConverted => "另存轉檔",
             Self::Grayscale => "灰階",
+            Self::GifFrameDelay => "影格延遲",
+            Self::GifMaker => "GIF 製作",
+            Self::GifRepeat => "循環播放",
+            Self::GifResize => "縮放影格",
+            Self::GifSource => "GIF 來源",
             Self::Invert => "反相",
             Self::Brightness => "亮度",
             Self::Contrast => "對比",
@@ -304,9 +317,15 @@ impl TextKey {
             Self::RotateLeft => "Rotate Left",
             Self::RotateRight => "Rotate Right",
             Self::RunBatch => "Run Batch Convert",
+            Self::RunGif => "Create GIF",
             Self::SaveAsNewFile => "Save As",
             Self::SaveConverted => "Save Converted",
             Self::Grayscale => "Grayscale",
+            Self::GifFrameDelay => "Frame delay",
+            Self::GifMaker => "GIF Maker",
+            Self::GifRepeat => "Loop",
+            Self::GifResize => "Resize frames",
+            Self::GifSource => "GIF source",
             Self::Invert => "Invert",
             Self::Brightness => "Brightness",
             Self::Contrast => "Contrast",
@@ -444,6 +463,11 @@ pub struct PhotoToolApp {
     sharpen_threshold: i32,
     panorama_mode: PanoramaMode,
     panorama_width: u32,
+    gif_delay_ms: u32,
+    gif_repeat: bool,
+    gif_resize_enabled: bool,
+    gif_max_width: u32,
+    gif_max_height: u32,
     batch_input_dir: Option<PathBuf>,
     batch_output_dir: Option<PathBuf>,
     batch_resize_enabled: bool,
@@ -496,6 +520,11 @@ impl PhotoToolApp {
             sharpen_threshold: 8,
             panorama_mode: PanoramaMode::Pad,
             panorama_width: 2048,
+            gif_delay_ms: 120,
+            gif_repeat: true,
+            gif_resize_enabled: false,
+            gif_max_width: 800,
+            gif_max_height: 800,
             batch_input_dir: None,
             batch_output_dir: None,
             batch_resize_enabled: false,
@@ -734,6 +763,8 @@ impl PhotoToolApp {
             self.compose_panel(ui, &ctx);
             ui.add_space(20.0);
             self.panorama_panel(ui);
+            ui.add_space(20.0);
+            self.gif_panel(ui, &ctx);
             ui.add_space(20.0);
             self.batch_panel(ui);
         });
@@ -1001,6 +1032,63 @@ impl PhotoToolApp {
             .clicked()
         {
             self.export_panorama();
+        }
+    }
+
+    fn gif_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.heading(self.tr(TextKey::GifMaker));
+        ui.separator();
+
+        if ui.button(self.tr(TextKey::InputFolder)).clicked()
+            && let Some(path) = rfd::FileDialog::new().pick_folder()
+        {
+            self.open_folder(ctx, path);
+        }
+
+        ui.label(format!(
+            "{}: {} {}",
+            self.tr(TextKey::GifSource),
+            self.folder_files.len(),
+            self.tr(TextKey::Images)
+        ));
+
+        let delay_label = self.tr(TextKey::GifFrameDelay);
+        ui.add(
+            egui::DragValue::new(&mut self.gif_delay_ms)
+                .range(10..=10_000)
+                .suffix(" ms")
+                .prefix(format!("{delay_label} ")),
+        );
+        let repeat_label = self.tr(TextKey::GifRepeat);
+        let resize_label = self.tr(TextKey::GifResize);
+        ui.checkbox(&mut self.gif_repeat, repeat_label);
+        ui.checkbox(&mut self.gif_resize_enabled, resize_label);
+
+        if self.gif_resize_enabled {
+            let max_w_label = self.tr(TextKey::MaxW);
+            let max_h_label = self.tr(TextKey::MaxH);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::DragValue::new(&mut self.gif_max_width)
+                        .range(1..=65535)
+                        .prefix(max_w_label),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.gif_max_height)
+                        .range(1..=65535)
+                        .prefix(max_h_label),
+                );
+            });
+        }
+
+        if ui
+            .add_enabled(
+                !self.folder_files.is_empty(),
+                egui::Button::new(self.tr(TextKey::RunGif)),
+            )
+            .clicked()
+        {
+            self.export_gif();
         }
     }
 
@@ -1706,6 +1794,18 @@ impl PhotoToolApp {
         )
     }
 
+    fn default_gif_name(&self) -> String {
+        let stem = self
+            .folder_files
+            .first()
+            .and_then(|path| path.parent())
+            .and_then(|path| path.file_name())
+            .and_then(|value| value.to_str())
+            .unwrap_or("animation");
+        let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+        format!("{stem}_gif_{timestamp}.gif")
+    }
+
     fn export_panorama(&mut self) {
         let Some(image) = self.render_current_image() else {
             return;
@@ -1752,6 +1852,66 @@ impl PhotoToolApp {
                 self.status = match self.language {
                     Language::ZhTw => format!("360 匯出失敗：{error}"),
                     Language::En => format!("360 export failed: {error}"),
+                };
+            }
+        }
+    }
+
+    fn export_gif(&mut self) {
+        if self.folder_files.is_empty() {
+            self.status = match self.language {
+                Language::ZhTw => "請先開啟含有圖片的資料夾。".to_owned(),
+                Language::En => "Open a folder with images first.".to_owned(),
+            };
+            return;
+        }
+
+        let Some(mut output) = rfd::FileDialog::new()
+            .add_filter("GIF", &["gif"])
+            .set_file_name(self.default_gif_name())
+            .save_file()
+        else {
+            return;
+        };
+        if output.extension().is_none() {
+            output.set_extension("gif");
+        }
+
+        match write_animated_gif(
+            &self.folder_files,
+            &output,
+            GifOptions {
+                delay_ms: self.gif_delay_ms,
+                repeat: self.gif_repeat,
+                max_width: self.gif_resize_enabled.then_some(self.gif_max_width),
+                max_height: self.gif_resize_enabled.then_some(self.gif_max_height),
+                background: [255, 255, 255, 255],
+            },
+        ) {
+            Ok(result) => {
+                self.status = match self.language {
+                    Language::ZhTw => format!(
+                        "已製作 GIF：{}（{} 張，{}x{}，{} ms/張）",
+                        result.output.display(),
+                        result.frame_count,
+                        result.width,
+                        result.height,
+                        result.delay_ms
+                    ),
+                    Language::En => format!(
+                        "Created GIF {} ({} frames, {}x{}, {} ms/frame)",
+                        result.output.display(),
+                        result.frame_count,
+                        result.width,
+                        result.height,
+                        result.delay_ms
+                    ),
+                };
+            }
+            Err(error) => {
+                self.status = match self.language {
+                    Language::ZhTw => format!("GIF 製作失敗：{error}"),
+                    Language::En => format!("GIF export failed: {error}"),
                 };
             }
         }

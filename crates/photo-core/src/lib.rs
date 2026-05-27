@@ -3,6 +3,7 @@ pub mod compose;
 pub mod convert;
 pub mod error;
 pub mod formats;
+pub mod gif;
 pub mod gpano_xmp;
 pub mod image_io;
 pub mod panorama360;
@@ -22,6 +23,7 @@ pub use convert::{
 };
 pub use error::{PhotoError, Result};
 pub use formats::SupportedFormat;
+pub use gif::{GifOptions, GifResult, write_animated_gif};
 pub use image_io::{ImageInfo, inspect_image, load_dynamic_image};
 pub use panorama360::{
     PanoramaMode, PanoramaOptions, PanoramaResult, make_equirectangular,

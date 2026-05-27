@@ -20,7 +20,7 @@ chrono = "0.4.42"
 clap = { version = "4.6.1", features = ["derive"] }
 eframe = "0.34.2"
 egui = "0.34.2"
-image = { version = "0.25.10", default-features = false, features = ["bmp", "jpeg", "png", "tiff", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 imageproc = "0.26.2"
 rayon = "1.11.0"
 rfd = "0.15.4"

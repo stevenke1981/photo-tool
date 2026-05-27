@@ -31,13 +31,15 @@ pub struct BatchSummary {
 }
 
 pub fn collect_supported_files(root: impl AsRef<Path>) -> Vec<PathBuf> {
-    WalkDir::new(root)
+    let mut files: Vec<PathBuf> = WalkDir::new(root)
         .into_iter()
         .filter_map(std::result::Result::ok)
         .filter(|entry| entry.file_type().is_file())
         .map(|entry| entry.into_path())
         .filter(|path| SupportedFormat::from_path(path).is_some())
-        .collect()
+        .collect();
+    files.sort();
+    files
 }
 
 pub fn process_batch(inputs: &[PathBuf], options: &BatchOptions) -> BatchSummary {

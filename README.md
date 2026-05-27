@@ -28,6 +28,7 @@ Rust + egui image viewer and converter with 360-compatible JPEG export.
 - Export the flattened composition as a new image.
 - Convert images between JPEG, PNG, WEBP, BMP, and TIFF.
 - Batch convert folders with optional resize-to-fit.
+- Create animated GIF files from a folder of images, with frame delay, looping, and optional resize settings.
 - Export one image as a 2:1 360-compatible JPEG with GPano/XMP metadata.
 - Use CLI commands for repeatable smoke tests.
 
@@ -58,6 +59,7 @@ cargo run -p photo-tool
 cargo run -p photo-cli -- info input.jpg
 cargo run -p photo-cli -- convert input.png output.jpg --format jpg --quality 90
 cargo run -p photo-cli -- batch input-folder output-folder --format webp --quality 90 --max-width 2048 --max-height 2048
+cargo run -p photo-cli -- gif input-folder output.gif --delay-ms 120 --max-width 800 --max-height 800
 cargo run -p photo-cli -- pano360 input.jpg output_360.jpg --mode pad --width 2048 --quality 92
 ```
 

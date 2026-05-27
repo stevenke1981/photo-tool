@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use photo_core::{
-    BatchOptions, ConvertOptions, PanoramaMode, PanoramaOptions, SupportedFormat,
-    collect_supported_files, convert_image, inspect_image, process_batch, write_panorama_jpeg,
+    BatchOptions, ConvertOptions, GifOptions, PanoramaMode, PanoramaOptions, SupportedFormat,
+    collect_supported_files, convert_image, inspect_image, process_batch, write_animated_gif,
+    write_panorama_jpeg,
 };
 
 #[derive(Debug, Parser)]
@@ -45,6 +46,18 @@ enum Command {
         format: SupportedFormat,
         #[arg(long, default_value_t = 92)]
         quality: u8,
+        #[arg(long)]
+        max_width: Option<u32>,
+        #[arg(long)]
+        max_height: Option<u32>,
+    },
+    Gif {
+        input_dir: PathBuf,
+        output: PathBuf,
+        #[arg(long, default_value_t = 120)]
+        delay_ms: u32,
+        #[arg(long, default_value_t = true)]
+        repeat: bool,
         #[arg(long)]
         max_width: Option<u32>,
         #[arg(long)]
@@ -154,6 +167,35 @@ fn main() -> Result<()> {
                     result.error.as_deref().unwrap_or("unknown error")
                 );
             }
+        }
+        Command::Gif {
+            input_dir,
+            output,
+            delay_ms,
+            repeat,
+            max_width,
+            max_height,
+        } => {
+            let files = collect_supported_files(&input_dir);
+            let result = write_animated_gif(
+                &files,
+                output,
+                GifOptions {
+                    delay_ms,
+                    repeat,
+                    max_width,
+                    max_height,
+                    background: [255, 255, 255, 255],
+                },
+            )?;
+            println!(
+                "wrote animated GIF {} ({} frames, {}x{}, {} ms/frame)",
+                result.output.display(),
+                result.frame_count,
+                result.width,
+                result.height,
+                result.delay_ms
+            );
         }
     }
 
