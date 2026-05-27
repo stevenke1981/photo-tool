@@ -53,6 +53,7 @@ enum TextKey {
     Batch,
     BatchRunning,
     BrowseHint,
+    ClipboardImage,
     Convert,
     Compose,
     CropRectangle,
@@ -152,7 +153,8 @@ impl TextKey {
             Self::Adjustments => "色彩 / 濾鏡",
             Self::Batch => "批次轉檔",
             Self::BatchRunning => "批次轉檔執行中。",
-            Self::BrowseHint => "開啟圖片、資料夾，或直接把圖檔拖放到視窗。",
+            Self::BrowseHint => "開啟圖片、資料夾、貼上剪貼簿圖片，或直接把圖檔拖放到視窗。",
+            Self::ClipboardImage => "剪貼簿圖片",
             Self::Convert => "格式轉換",
             Self::Compose => "合成 / 圖層",
             Self::CropRectangle => "裁切範圍",
@@ -230,7 +232,9 @@ impl TextKey {
             Self::DuplicateLayer => "複製圖層",
             Self::Undo => "復原",
             Self::Redo => "重做",
-            Self::KeyboardHint => "提示：可在畫布拖曳圖層；Delete 刪除；方向鍵微調。",
+            Self::KeyboardHint => {
+                "提示：Ctrl+V 貼上剪貼簿圖片；可在畫布拖曳圖層；Delete 刪除；方向鍵微調。"
+            }
             Self::MoveUp => "上移",
             Self::MoveDown => "下移",
             Self::ZoomIn => "放大",
@@ -252,7 +256,10 @@ impl TextKey {
             Self::Adjustments => "Color / Filters",
             Self::Batch => "Batch",
             Self::BatchRunning => "Batch conversion is running.",
-            Self::BrowseHint => "Open an image, open a folder, or drag files into this window.",
+            Self::BrowseHint => {
+                "Open an image, open a folder, paste a clipboard image, or drag files into this window."
+            }
+            Self::ClipboardImage => "Clipboard image",
             Self::Convert => "Convert",
             Self::Compose => "Compose / Layers",
             Self::CropRectangle => "Crop rectangle",
@@ -330,7 +337,9 @@ impl TextKey {
             Self::DuplicateLayer => "Duplicate Layer",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
-            Self::KeyboardHint => "Tip: drag layers on canvas; Delete removes; arrow keys nudge.",
+            Self::KeyboardHint => {
+                "Tip: Ctrl+V pastes a clipboard image; drag layers on canvas; Delete removes; arrow keys nudge."
+            }
             Self::MoveUp => "Move Up",
             Self::MoveDown => "Move Down",
             Self::ZoomIn => "Zoom In",
@@ -548,6 +557,10 @@ impl PhotoToolApp {
                 self.open_path(ctx, path);
             }
 
+            if ui.button(self.tr(TextKey::PasteImage)).clicked() {
+                self.paste_clipboard_image(ctx);
+            }
+
             if ui.button(self.tr(TextKey::OpenFolder)).clicked()
                 && let Some(path) = rfd::FileDialog::new().pick_folder()
             {
@@ -664,7 +677,21 @@ impl PhotoToolApp {
                 ui.label(format!("Bytes: {}", info.file_size));
             }
             None => {
-                ui.label(self.tr(TextKey::NoImage));
+                if let Some(image) = &self.working_image {
+                    ui.label(format!(
+                        "{}: {}",
+                        self.tr(TextKey::File),
+                        self.tr(TextKey::ClipboardImage)
+                    ));
+                    ui.label(format!(
+                        "{}: {} x {}",
+                        self.tr(TextKey::Current),
+                        image.width(),
+                        image.height()
+                    ));
+                } else {
+                    ui.label(self.tr(TextKey::NoImage));
+                }
             }
         }
 
@@ -1926,10 +1953,11 @@ impl PhotoToolApp {
             return;
         }
 
-        let (undo, redo, delete, duplicate, left, right, up, down) = ctx.input(|input| {
+        let (undo, redo, paste, delete, duplicate, left, right, up, down) = ctx.input(|input| {
             (
                 input.modifiers.ctrl && input.key_pressed(egui::Key::Z),
                 input.modifiers.ctrl && input.key_pressed(egui::Key::Y),
+                input.modifiers.command && input.key_pressed(egui::Key::V),
                 input.key_pressed(egui::Key::Delete),
                 input.modifiers.ctrl && input.key_pressed(egui::Key::D),
                 input.key_pressed(egui::Key::ArrowLeft),
@@ -1945,6 +1973,10 @@ impl PhotoToolApp {
         }
         if redo {
             self.redo(ctx);
+            return;
+        }
+        if paste {
+            self.paste_clipboard_image(ctx);
             return;
         }
         if delete && self.selected_layer.is_some() {
@@ -2075,27 +2107,17 @@ impl PhotoToolApp {
         }
     }
 
-    fn paste_image_layer(&mut self, ctx: &egui::Context) {
-        match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_image()) {
+    fn paste_clipboard_image(&mut self, ctx: &egui::Context) {
+        match self.read_clipboard_image() {
             Ok(image) => {
-                let width = image.width as u32;
-                let height = image.height as u32;
-                let bytes = image.bytes.into_owned();
-                if let Some(rgba) = image::RgbaImage::from_raw(width, height, bytes) {
-                    let name = match self.language {
-                        Language::ZhTw => format!("貼上圖片 {}", self.compose_layers.len() + 1),
-                        Language::En => format!("Pasted Image {}", self.compose_layers.len() + 1),
-                    };
-                    self.push_image_layer(ctx, name, DynamicImage::ImageRgba8(rgba));
+                if self.working_image.is_some() {
+                    self.push_pasted_image_layer(ctx, image);
                     self.status = match self.language {
-                        Language::ZhTw => "已從剪貼簿貼上圖片。".to_owned(),
-                        Language::En => "Image pasted from clipboard.".to_owned(),
+                        Language::ZhTw => "已從剪貼簿貼上圖片圖層。".to_owned(),
+                        Language::En => "Pasted clipboard image as a layer.".to_owned(),
                     };
                 } else {
-                    self.status = match self.language {
-                        Language::ZhTw => "剪貼簿圖片格式無法讀取。".to_owned(),
-                        Language::En => "Clipboard image format could not be read.".to_owned(),
-                    };
+                    self.open_clipboard_image(ctx, image);
                 }
             }
             Err(error) => {
@@ -2105,6 +2127,73 @@ impl PhotoToolApp {
                 };
             }
         }
+    }
+
+    fn open_clipboard_image(&mut self, ctx: &egui::Context, image: DynamicImage) {
+        let width = image.width();
+        let height = image.height();
+        self.original_image = Some(image.clone());
+        self.working_image = Some(image);
+        self.compose_layers.clear();
+        self.selected_layer = None;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.drag_snapshot = None;
+        self.image_info = None;
+        self.image_path = None;
+        self.folder_files.clear();
+        self.selected_index = None;
+        self.sync_edit_dimensions();
+        self.update_texture(ctx);
+        self.status = match self.language {
+            Language::ZhTw => format!("已從剪貼簿貼上圖片（{width}x{height}）。"),
+            Language::En => format!("Pasted image from clipboard ({width}x{height})."),
+        };
+    }
+
+    fn paste_image_layer(&mut self, ctx: &egui::Context) {
+        match self.read_clipboard_image() {
+            Ok(image) => {
+                self.push_pasted_image_layer(ctx, image);
+                self.status = match self.language {
+                    Language::ZhTw => "已從剪貼簿貼上圖片。".to_owned(),
+                    Language::En => "Image pasted from clipboard.".to_owned(),
+                };
+            }
+            Err(error) => {
+                self.status = match self.language {
+                    Language::ZhTw => format!("剪貼簿沒有可貼上的圖片：{error}"),
+                    Language::En => format!("No image could be pasted from clipboard: {error}"),
+                };
+            }
+        }
+    }
+
+    fn read_clipboard_image(&self) -> Result<DynamicImage, String> {
+        match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_image()) {
+            Ok(image) => {
+                let width = image.width as u32;
+                let height = image.height as u32;
+                let bytes = image.bytes.into_owned();
+                if let Some(rgba) = image::RgbaImage::from_raw(width, height, bytes) {
+                    Ok(DynamicImage::ImageRgba8(rgba))
+                } else {
+                    Err(match self.language {
+                        Language::ZhTw => "剪貼簿圖片格式無法讀取。".to_owned(),
+                        Language::En => "Clipboard image format could not be read.".to_owned(),
+                    })
+                }
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn push_pasted_image_layer(&mut self, ctx: &egui::Context, image: DynamicImage) {
+        let name = match self.language {
+            Language::ZhTw => format!("貼上圖片 {}", self.compose_layers.len() + 1),
+            Language::En => format!("Pasted Image {}", self.compose_layers.len() + 1),
+        };
+        self.push_image_layer(ctx, name, image);
     }
 
     fn push_image_layer(&mut self, ctx: &egui::Context, name: String, image: DynamicImage) {
