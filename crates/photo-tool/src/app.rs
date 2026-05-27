@@ -4,6 +4,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use base64::{Engine as _, engine::general_purpose};
+use chrono::Local;
 use eframe::egui;
 use egui::{
     Color32, ColorImage, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Vec2,
@@ -1698,7 +1699,11 @@ impl PhotoToolApp {
             .and_then(|path| path.file_stem())
             .and_then(|value| value.to_str())
             .unwrap_or("photo");
-        format!("{stem}_edited.{}", self.output_format.extension())
+        let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+        format!(
+            "{stem}_edited_{timestamp}.{}",
+            self.output_format.extension()
+        )
     }
 
     fn export_panorama(&mut self) {

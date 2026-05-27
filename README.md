@@ -64,8 +64,11 @@ cargo run -p photo-cli -- pano360 input.jpg output_360.jpg --mode pad --width 20
 ## Release Build
 
 ```powershell
-cargo build --release --workspace
-New-Item -ItemType Directory -Force dist
-Copy-Item target\release\photo-tool.exe dist\photo-tool.exe -Force
-Copy-Item target\release\photo-cli.exe dist\photo-cli.exe -Force
+.\scripts\build-release.ps1
+```
+
+Optional full check-and-build:
+
+```powershell
+.\scripts\build-release.ps1 -RunTests
 ```
