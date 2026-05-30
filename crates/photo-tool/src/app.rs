@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
@@ -11,11 +12,12 @@ use egui::{
 };
 use image::DynamicImage;
 use photo_core::{
-    BatchOptions, BatchSummary, ComposeDocument, ComposeLayer, ConvertOptions, GifOptions,
-    ImageInfo, ImageLayer, PanoramaMode, PanoramaOptions, SupportedFormat, TextLayer,
-    collect_supported_files, inspect_image, load_dynamic_image, process_batch_with_progress,
+    BatchOptions, BatchSummary, C2paInfo, C2paManifestDraft, ComposeDocument, ComposeLayer,
+    ConvertOptions, ConvertResult, GifOptions, ImageInfo, ImageLayer, PanoramaMode,
+    PanoramaOptions, SupportedFormat, TextLayer, collect_supported_files, inspect_c2pa,
+    inspect_image, load_dynamic_image, process_batch_with_progress, remove_c2pa_manifest,
     render_composition, save_dynamic_image, text_layer_bounds, write_animated_gif,
-    write_panorama_dynamic_jpeg,
+    write_c2pa_manifest, write_panorama_dynamic_jpeg,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +71,16 @@ enum TextKey {
     FlipV,
     Folder,
     Format,
+    C2pa,
+    C2paMissing,
+    C2paWriteOnSave,
+    C2paRawJson,
+    AddC2paCopy,
+    RemoveC2paCopy,
+    Creator,
+    ActionNote,
+    Title,
+    Manifests,
     Image,
     AddImage,
     AddText,
@@ -176,6 +188,16 @@ impl TextKey {
             Self::FlipV => "垂直翻轉",
             Self::Folder => "資料夾",
             Self::Format => "格式",
+            Self::C2pa => "C2PA 內容憑證",
+            Self::C2paMissing => "此圖片沒有 C2PA manifest。",
+            Self::C2paWriteOnSave => "另存時寫入 C2PA",
+            Self::C2paRawJson => "原始 manifest JSON",
+            Self::AddC2paCopy => "添加 C2PA 副本",
+            Self::RemoveC2paCopy => "移除 C2PA 副本",
+            Self::Creator => "建立者",
+            Self::ActionNote => "編輯說明",
+            Self::Title => "標題",
+            Self::Manifests => "Manifest 數",
             Self::Image => "圖片",
             Self::AddImage => "加入圖片 / 圖示",
             Self::AddText => "新增文字",
@@ -287,6 +309,16 @@ impl TextKey {
             Self::FlipV => "Flip V",
             Self::Folder => "Folder",
             Self::Format => "Format",
+            Self::C2pa => "C2PA Content Credentials",
+            Self::C2paMissing => "This image has no C2PA manifest.",
+            Self::C2paWriteOnSave => "Write C2PA on Save As",
+            Self::C2paRawJson => "Raw manifest JSON",
+            Self::AddC2paCopy => "Add C2PA Copy",
+            Self::RemoveC2paCopy => "Remove C2PA Copy",
+            Self::Creator => "Creator",
+            Self::ActionNote => "Edit note",
+            Self::Title => "Title",
+            Self::Manifests => "Manifests",
             Self::Image => "Image",
             Self::AddImage => "Add Image / Icon",
             Self::AddText => "Add Text",
@@ -430,6 +462,9 @@ pub struct PhotoToolApp {
     pending_open: Option<PathBuf>,
     image_path: Option<PathBuf>,
     image_info: Option<ImageInfo>,
+    c2pa_info: C2paInfo,
+    c2pa_draft: C2paManifestDraft,
+    c2pa_write_on_save: bool,
     original_image: Option<DynamicImage>,
     working_image: Option<DynamicImage>,
     texture: Option<TextureHandle>,
@@ -487,6 +522,9 @@ impl PhotoToolApp {
             pending_open: initial_path,
             image_path: None,
             image_info: None,
+            c2pa_info: C2paInfo::default(),
+            c2pa_draft: C2paManifestDraft::default(),
+            c2pa_write_on_save: false,
             original_image: None,
             working_image: None,
             texture: None,
@@ -726,6 +764,9 @@ impl PhotoToolApp {
         }
 
         ui.add_space(16.0);
+        self.c2pa_panel(ui);
+
+        ui.add_space(16.0);
         ui.heading(self.tr(TextKey::Folder));
         ui.separator();
         ui.label(format!(
@@ -749,6 +790,65 @@ impl PhotoToolApp {
                     }
                 }
             });
+    }
+
+    fn c2pa_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading(self.tr(TextKey::C2pa));
+        ui.separator();
+
+        if self.c2pa_info.present {
+            ui.label(format!(
+                "{}: {}",
+                self.tr(TextKey::Status),
+                self.c2pa_info
+                    .validation_state
+                    .as_deref()
+                    .unwrap_or("Unknown")
+            ));
+            ui.label(format!(
+                "{}: {}",
+                self.tr(TextKey::Manifests),
+                self.c2pa_info.manifest_count
+            ));
+        } else {
+            ui.label(self.tr(TextKey::C2paMissing));
+        }
+
+        let write_on_save = self.tr(TextKey::C2paWriteOnSave);
+        ui.checkbox(&mut self.c2pa_write_on_save, write_on_save);
+        ui.add_enabled_ui(self.c2pa_write_on_save, |ui| {
+            ui.label(self.tr(TextKey::Title));
+            ui.text_edit_singleline(&mut self.c2pa_draft.title);
+            ui.label(self.tr(TextKey::Creator));
+            ui.text_edit_singleline(&mut self.c2pa_draft.creator);
+            ui.label(self.tr(TextKey::ActionNote));
+            ui.text_edit_multiline(&mut self.c2pa_draft.action);
+        });
+
+        ui.horizontal(|ui| {
+            if ui.button(self.tr(TextKey::AddC2paCopy)).clicked() {
+                self.save_c2pa_copy();
+            }
+
+            let remove_label = self.tr(TextKey::RemoveC2paCopy);
+            ui.add_enabled_ui(self.image_path.is_some(), |ui| {
+                if ui.button(remove_label).clicked() {
+                    self.remove_c2pa_copy();
+                }
+            });
+        });
+
+        if let Some(raw_json) = &self.c2pa_info.raw_json {
+            egui::CollapsingHeader::new(self.tr(TextKey::C2paRawJson))
+                .default_open(false)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            ui.monospace(raw_json);
+                        });
+                });
+        }
     }
 
     fn actions_panel(&mut self, ui: &mut egui::Ui) {
@@ -1649,6 +1749,7 @@ impl PhotoToolApp {
                 self.redo_stack.clear();
                 self.drag_snapshot = None;
                 self.image_info = inspect_image(&path).ok();
+                self.load_c2pa_state(&path);
                 self.image_path = Some(path.clone());
                 self.sync_edit_dimensions();
                 self.update_texture(ctx);
@@ -1678,6 +1779,204 @@ impl PhotoToolApp {
         }
     }
 
+    fn load_c2pa_state(&mut self, path: &PathBuf) {
+        match inspect_c2pa(path) {
+            Ok(info) => {
+                let draft = C2paManifestDraft {
+                    title: info
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| default_c2pa_title(path)),
+                    creator: info.creator.clone().unwrap_or_default(),
+                    action: info.action.clone().unwrap_or_default(),
+                };
+                self.c2pa_write_on_save = info.present;
+                self.c2pa_info = info;
+                self.c2pa_draft = draft;
+            }
+            Err(_) => self.reset_c2pa_state(Some(path)),
+        }
+    }
+
+    fn reset_c2pa_state(&mut self, path: Option<&PathBuf>) {
+        self.c2pa_info = C2paInfo::default();
+        self.c2pa_draft = C2paManifestDraft {
+            title: path.map(default_c2pa_title).unwrap_or_default(),
+            creator: String::new(),
+            action: String::new(),
+        };
+        self.c2pa_write_on_save = false;
+    }
+
+    fn save_image_with_optional_c2pa(
+        &self,
+        image: &DynamicImage,
+        output: &PathBuf,
+        format: SupportedFormat,
+    ) -> photo_core::Result<ConvertResult> {
+        let options = ConvertOptions {
+            format,
+            quality: self.quality,
+            background: [255, 255, 255, 255],
+        };
+
+        if !self.c2pa_write_on_save {
+            return save_dynamic_image(image, output, options);
+        }
+
+        self.save_image_with_c2pa(image, output, options)
+    }
+
+    fn save_image_with_c2pa(
+        &self,
+        image: &DynamicImage,
+        output: &PathBuf,
+        options: ConvertOptions,
+    ) -> photo_core::Result<ConvertResult> {
+        let temp_output = temporary_c2pa_source_path(output);
+        let result = save_dynamic_image(image, &temp_output, options)?;
+        if output.exists() {
+            fs::remove_file(output)?;
+        }
+
+        let write_result = write_c2pa_manifest(&temp_output, output, &self.c2pa_draft);
+        let _ = fs::remove_file(&temp_output);
+        write_result?;
+
+        Ok(ConvertResult {
+            input: PathBuf::new(),
+            output: output.clone(),
+            format: result.format,
+            width: result.width,
+            height: result.height,
+        })
+    }
+
+    fn save_c2pa_copy(&mut self) {
+        let Some(image) = self.render_current_image() else {
+            self.status = match self.language {
+                Language::ZhTw => "尚未載入可寫入 C2PA 的圖片。".to_owned(),
+                Language::En => "No image loaded for C2PA export.".to_owned(),
+            };
+            return;
+        };
+
+        let Some(mut output) = rfd::FileDialog::new()
+            .add_filter("Images", &["jpg", "jpeg", "png", "webp", "tif", "tiff"])
+            .set_file_name(self.default_c2pa_copy_name())
+            .save_file()
+        else {
+            return;
+        };
+
+        if output.extension().is_none() {
+            output.set_extension(self.output_format.extension());
+        }
+        let format = SupportedFormat::from_path(&output).unwrap_or(self.output_format);
+        match self.save_image_with_c2pa(
+            &image,
+            &output,
+            ConvertOptions {
+                format,
+                quality: self.quality,
+                background: [255, 255, 255, 255],
+            },
+        ) {
+            Ok(result) => {
+                self.status = match self.language {
+                    Language::ZhTw => format!(
+                        "已添加 C2PA 並另存：{}（{}x{}）",
+                        result.output.display(),
+                        result.width,
+                        result.height
+                    ),
+                    Language::En => format!(
+                        "Added C2PA and saved {} ({}x{})",
+                        result.output.display(),
+                        result.width,
+                        result.height
+                    ),
+                };
+            }
+            Err(error) => {
+                self.status = match self.language {
+                    Language::ZhTw => format!("添加 C2PA 失敗：{error}"),
+                    Language::En => format!("Adding C2PA failed: {error}"),
+                };
+            }
+        }
+    }
+
+    fn remove_c2pa_copy(&mut self) {
+        let Some(source) = self.image_path.clone() else {
+            self.status = match self.language {
+                Language::ZhTw => "尚未開啟可移除 C2PA 的來源檔。".to_owned(),
+                Language::En => "No source file loaded for C2PA removal.".to_owned(),
+            };
+            return;
+        };
+
+        let Some(mut output) = rfd::FileDialog::new()
+            .add_filter("Images", &["jpg", "jpeg", "png", "webp", "tif", "tiff"])
+            .set_file_name(self.default_c2pa_removed_name())
+            .save_file()
+        else {
+            return;
+        };
+
+        if output.extension().is_none() {
+            if let Some(extension) = source.extension() {
+                output.set_extension(extension);
+            }
+        }
+
+        if same_existing_path(&source, &output) {
+            self.status = match self.language {
+                Language::ZhTw => "移除 C2PA 請另存為不同檔案。".to_owned(),
+                Language::En => "Choose a different file when removing C2PA.".to_owned(),
+            };
+            return;
+        }
+        if output.exists() {
+            if let Err(error) = fs::remove_file(&output) {
+                self.status = match self.language {
+                    Language::ZhTw => format!("無法覆寫輸出檔：{error}"),
+                    Language::En => format!("Could not overwrite output file: {error}"),
+                };
+                return;
+            }
+        }
+
+        match remove_c2pa_manifest(&source, &output) {
+            Ok(()) => {
+                self.status = match self.language {
+                    Language::ZhTw => format!("已移除 C2PA 並另存：{}", output.display()),
+                    Language::En => format!("Removed C2PA and saved {}", output.display()),
+                };
+            }
+            Err(error) => {
+                self.status = match self.language {
+                    Language::ZhTw => format!("移除 C2PA 失敗：{error}"),
+                    Language::En => format!("Removing C2PA failed: {error}"),
+                };
+            }
+        }
+    }
+
+    fn default_c2pa_copy_name(&self) -> String {
+        self.image_path
+            .as_ref()
+            .map(|path| file_name_with_suffix(path, "_c2pa"))
+            .unwrap_or_else(|| format!("c2pa.{}", self.output_format.extension()))
+    }
+
+    fn default_c2pa_removed_name(&self) -> String {
+        self.image_path
+            .as_ref()
+            .map(|path| file_name_with_suffix(path, "_no_c2pa"))
+            .unwrap_or_else(|| format!("no_c2pa.{}", self.output_format.extension()))
+    }
+
     fn save_converted(&mut self) {
         let Some(image) = self.render_current_image() else {
             return;
@@ -1690,15 +1989,7 @@ impl PhotoToolApp {
             return;
         };
 
-        match save_dynamic_image(
-            &image,
-            &output,
-            ConvertOptions {
-                format: self.output_format,
-                quality: self.quality,
-                background: [255, 255, 255, 255],
-            },
-        ) {
+        match self.save_image_with_optional_c2pa(&image, &output, self.output_format) {
             Ok(result) => {
                 self.status = match self.language {
                     Language::ZhTw => format!(
@@ -1746,15 +2037,7 @@ impl PhotoToolApp {
         }
         let format = SupportedFormat::from_path(&output).unwrap_or(self.output_format);
 
-        match save_dynamic_image(
-            &image,
-            &output,
-            ConvertOptions {
-                format,
-                quality: self.quality,
-                background: [255, 255, 255, 255],
-            },
-        ) {
+        match self.save_image_with_optional_c2pa(&image, &output, format) {
             Ok(result) => {
                 self.status = match self.language {
                     Language::ZhTw => format!(
@@ -2306,6 +2589,7 @@ impl PhotoToolApp {
         self.drag_snapshot = None;
         self.image_info = None;
         self.image_path = None;
+        self.reset_c2pa_state(None);
         self.folder_files.clear();
         self.selected_index = None;
         self.sync_edit_dimensions();
@@ -2770,6 +3054,48 @@ fn normalize_selected_layer(selected: Option<usize>, len: usize) -> Option<usize
     } else {
         Some(selected.unwrap_or(0).min(len - 1))
     }
+}
+
+fn default_c2pa_title(path: &PathBuf) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("image")
+        .to_owned()
+}
+
+fn file_name_with_suffix(path: &PathBuf, suffix: &str) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("image");
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("jpg");
+    format!("{stem}{suffix}.{extension}")
+}
+
+fn same_existing_path(left: &PathBuf, right: &PathBuf) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn temporary_c2pa_source_path(output: &PathBuf) -> PathBuf {
+    let extension = output
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("tmp");
+    let stamp = Local::now()
+        .timestamp_nanos_opt()
+        .unwrap_or_else(|| Local::now().timestamp_micros() * 1_000);
+    let file_name = format!(".photo-tool-c2pa-{stamp}.{extension}");
+
+    output
+        .parent()
+        .map(|parent| parent.join(&file_name))
+        .unwrap_or_else(|| std::env::temp_dir().join(file_name))
 }
 
 fn encode_png_base64(image: &DynamicImage) -> Result<String, String> {

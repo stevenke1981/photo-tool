@@ -1,4 +1,5 @@
 pub mod batch;
+pub mod c2pa_metadata;
 pub mod compose;
 pub mod convert;
 pub mod error;
@@ -13,6 +14,9 @@ pub mod transform;
 pub use batch::{
     BatchOptions, BatchResult, BatchSummary, collect_supported_files, process_batch,
     process_batch_with_progress,
+};
+pub use c2pa_metadata::{
+    C2paInfo, C2paManifestDraft, inspect_c2pa, remove_c2pa_manifest, write_c2pa_manifest,
 };
 pub use compose::{
     ComposeDocument, ComposeLayer, ImageLayer, LayerBounds, TextLayer, render_composition,

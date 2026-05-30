@@ -14,6 +14,9 @@ pub enum PhotoError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
+    #[error("C2PA error: {0}")]
+    C2pa(String),
+
     #[error("image error: {0}")]
     Image(#[from] image::ImageError),
 

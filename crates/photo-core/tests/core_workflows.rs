@@ -4,7 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use image::{DynamicImage, RgbaImage};
 use photo_core::gpano_xmp::contains_gpano_marker;
 use photo_core::{
-    ConvertOptions, PanoramaMode, PanoramaOptions, SupportedFormat, convert_image, inspect_image,
+    C2paManifestDraft, ConvertOptions, PanoramaMode, PanoramaOptions, SupportedFormat,
+    convert_image, inspect_c2pa, inspect_image, remove_c2pa_manifest, write_c2pa_manifest,
     write_panorama_jpeg,
 };
 
@@ -64,6 +65,87 @@ fn writes_decodable_gpano_jpeg() {
 
     let info = inspect_image(&output).unwrap();
     assert_eq!((info.width, info.height), (100, 50));
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn reports_missing_c2pa_manifest_for_plain_image() {
+    let dir = temp_dir("reports_missing_c2pa_manifest_for_plain_image");
+    fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("plain.jpg");
+    DynamicImage::ImageRgba8(RgbaImage::new(16, 16))
+        .save(&input)
+        .unwrap();
+
+    let info = inspect_c2pa(&input).unwrap();
+
+    assert!(!info.present);
+    assert_eq!(info.manifest_count, 0);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn writes_and_reads_c2pa_manifest() {
+    let dir = temp_dir("writes_and_reads_c2pa_manifest");
+    fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("input.jpg");
+    let output = dir.join("output.jpg");
+    DynamicImage::ImageRgba8(RgbaImage::new(32, 24))
+        .save(&input)
+        .unwrap();
+
+    write_c2pa_manifest(
+        &input,
+        &output,
+        &C2paManifestDraft {
+            title: "Edited portrait".to_string(),
+            creator: "Steven".to_string(),
+            action: "Adjusted color and crop".to_string(),
+        },
+    )
+    .unwrap();
+
+    let info = inspect_c2pa(&output).unwrap();
+
+    assert!(info.present);
+    assert_eq!(info.title.as_deref(), Some("Edited portrait"));
+    assert_eq!(info.creator.as_deref(), Some("Steven"));
+    assert_eq!(info.action.as_deref(), Some("Adjusted color and crop"));
+    assert_eq!(info.manifest_count, 1);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn removes_c2pa_manifest_from_image_copy() {
+    let dir = temp_dir("removes_c2pa_manifest_from_image_copy");
+    fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("input.jpg");
+    let signed = dir.join("signed.jpg");
+    let stripped = dir.join("stripped.jpg");
+    DynamicImage::ImageRgba8(RgbaImage::new(32, 24))
+        .save(&input)
+        .unwrap();
+
+    write_c2pa_manifest(
+        &input,
+        &signed,
+        &C2paManifestDraft {
+            title: "Signed image".to_string(),
+            creator: "Steven".to_string(),
+            action: "Added C2PA".to_string(),
+        },
+    )
+    .unwrap();
+    assert!(inspect_c2pa(&signed).unwrap().present);
+
+    remove_c2pa_manifest(&signed, &stripped).unwrap();
+
+    let info = inspect_c2pa(&stripped).unwrap();
+    assert!(!info.present);
+    assert!(stripped.exists());
 
     let _ = fs::remove_dir_all(dir);
 }
